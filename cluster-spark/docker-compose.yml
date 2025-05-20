@@ -20,6 +20,8 @@ services:
     ports:
       - '9090:8080'
       - '7077:7077'
+      - "2222:22"
+
 
 
   spark-history-server:

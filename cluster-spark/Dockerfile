@@ -17,6 +17,13 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+
+# SSH 
+RUN mkdir /var/run/sshd && \
+    echo 'root:root' | chpasswd && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    mkdir -p /root/.ssh && chmod 700 /root/.ssh
+
 # Variables d'environnement
 ENV SPARK_HOME=/opt/spark
 ENV HADOOP_HOME=/opt/hadoop

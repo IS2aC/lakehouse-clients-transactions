@@ -1,5 +1,11 @@
 #!/bin/bash
 
+
+# Launch ssh
+service ssh start
+
+
+# Launch Spark
 SPARK_WORKLOAD=$1
 
 echo "SPARK_WORKLOAD: $SPARK_WORKLOAD"

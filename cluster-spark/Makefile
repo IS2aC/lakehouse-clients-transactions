@@ -1,4 +1,5 @@
 WORKERS ?= 3 # number of workers for scaling
+AIRFLOW_NETWORK ?= astro-airflow_060da1_airflow
 
 build:
 	docker compose build  
@@ -10,7 +11,7 @@ build-progress:
 	docker compose build --no-cache --progress=plain
 
 down:
-	docker compose down --volumes
+	docker compose down
 
 run:
 	make down && docker compose up
@@ -29,3 +30,10 @@ submit:
 
 log-master:
 	docker logs -f da-spark-master
+
+# command shortcut for connection to airflow network
+connect-airflow-network:
+	docker network connect $(AIRFLOW_NETWORK) da-spark-master
+	docker network connect $(AIRFLOW_NETWORK) cluster-spark-spark-worker-1
+	docker network connect $(AIRFLOW_NETWORK) cluster-spark-spark-worker-2
+	docker network connect $(AIRFLOW_NETWORK) cluster-spark-spark-worker-3
