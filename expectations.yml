@@ -1,0 +1,13 @@
+expectation_suite_name: my_suite
+expectations:
+  - expectation_type: expect_column_to_exist
+    kwargs:
+      column: age
+  - expectation_type: expect_column_values_to_be_between
+    kwargs:
+      column: age
+      min_value: 0
+      max_value: 120
+  - expectation_type: expect_column_values_to_not_be_null
+    kwargs:
+      column: name

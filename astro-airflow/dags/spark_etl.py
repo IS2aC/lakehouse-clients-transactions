@@ -1,22 +1,19 @@
 from airflow import DAG
-from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator as so
+from airflow.providers.ssh.operators.ssh import SSHOperator as ssh
 from datetime import datetime, timedelta
 
-with DAG('spark_etl', 
-         start_date =  datetime(2025, 5, 20),
-         schedule_interval = None) as dag:
+with DAG(
+    dag_id =  'spark_etl', 
+    start_date =  datetime(2025, 5, 20),
+    schedule_interval = None, 
+    catchup = False
+    ) as dag:
     
 
-    job_0 = so(
+    job_0 = ssh(
         task_id='job_0',
-        application='include/job0.py',
-        conf={'spark.master': 'spark://da-spark-master:7077'},
-        total_executor_cores='1',
-        executor_cores='1',
-        executor_memory='2g',
-        driver_memory='2g',
-        num_executors='1',
-        verbose=False
+        ssh_conn_id='ssh_spark_master',
+        command='python3 /opt/spark/apps/job_hello_world.py',
     )
 
     job_0
