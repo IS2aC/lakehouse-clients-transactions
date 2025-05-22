@@ -1,10 +1,14 @@
 from include.dailtrans_checks import DailyTansactionsChecking as DTC
+from include.data_quality import DataQualityVerifications as DQV
+from include.data_quality import DataQualityCheckSum as DQCS
 from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.operators.dummy import DummyOperator
 from datetime import datetime, timedelta
 from include.elt_dailytrans import localfile_on_minio
 from airflow import DAG
+from airflow.utils.task_group import TaskGroup
+import os 
 
 ### VARIABLES ###
 
@@ -16,8 +20,15 @@ dtc =  DTC(
 )
 MINIO_HOOK =  S3Hook(aws_conn_id="minio_default")
 BUCKET_NAME  = 'dailytrans'
-#################
+LAST_FILE_DETECT  =  max(os.listdir(PATH_DAILYTRANS_REPERTORY)) if len(os.listdir(PATH_DAILYTRANS_REPERTORY)) > 0 else ''
+dqv = DQV(PATH_DAILYTRANS_REPERTORY + '/' + LAST_FILE_DETECT)
+dqcs_dailytrans = DQCS(
+    local_file_path_dataframe = PATH_DAILYTRANS_REPERTORY + '/' + LAST_FILE_DETECT,
+    s3_file_path_dataframe = LAST_FILE_DETECT, 
+    bucket_name='dailytrans'
+)
 
+#################
 
 
 with DAG(
@@ -36,7 +47,7 @@ with DAG(
         ti = kwargs['ti']
         check_dailytrans_result = ti.xcom_pull(task_ids='check_dailytrans')
         if check_dailytrans_result['new']:
-            return 'elt_dailytrans'
+            return 'schema_validation_task'
         else:
             return 'stop_dailytrans'
         
@@ -46,6 +57,47 @@ with DAG(
             provide_context=True,
     )
 
+    schema_validation_task = PythonOperator(
+        task_id='schema_validation_task',
+        python_callable=dqv.data_schema_validation,
+    )
+
+
+    def branch_over_check_schema_validation(**kwargs):
+        ti = kwargs['ti']
+        schema_validation_task_result = ti.xcom_pull(task_ids='schema_validation_task')
+        if schema_validation_task_result['success']:
+            return 'data_quality_assert'
+        else:
+            return 'stop_schema_validation_task'
+        
+    branch_over_check_schema_validation_task =  BranchPythonOperator(
+            task_id='branch_over_check_schema_validation_task',
+            python_callable=branch_over_check_schema_validation,
+            provide_context=True,
+    )
+    stop_schema_validation_task = DummyOperator(task_id='stop_schema_validation_task')
+
+    with TaskGroup('data_quality_assert') as data_quality_assert:
+        null_detections  = PythonOperator(
+            task_id='null_detections',
+            python_callable=dqv.checks_null_detections
+        )
+        negative_value_over_amount_transaction = PythonOperator(
+            task_id='negative_value_over_amount_transaction',
+            python_callable=dqv.checks_negative_value_over_amount_transaction
+        )
+        value_over_type_transactions = PythonOperator(
+            task_id='value_over_type_transactions',
+            python_callable=dqv.checks_over_type_transactions
+        )
+        transaction_date_timestamp = PythonOperator(
+            task_id='transaction_date_timestamp',
+            python_callable=dqv.checks_over_transaction_date_timestamp
+        )
+
+    ############### ELT DAILYTRANS ######################
+
     elt_dailytrans  = PythonOperator(
         task_id =  'elt_dailytrans', 
         python_callable =  localfile_on_minio, 
@@ -54,8 +106,34 @@ with DAG(
     stop_dailytrans =  DummyOperator(task_id='stop_dailytrans')
 
 
+    ############### CHECKSUM DAILYTRANS ###################
+    checksum_dailytrans = PythonOperator(
+        task_id='checksum_dailytrans',
+        python_callable=dqcs_dailytrans.data_checksum
+    )
+
+
+    def branch_over_checksum_dailytrans(**kwargs):
+        ti = kwargs['ti']
+        checksum_dailytrans_result =  ti.xcom_pull(task_ids='checksum_dailytrans')
+        if checksum_dailytrans_result['success']:
+            return 'job_sparks'
+        else:
+            return 'stop_checksum_dailytrans'
+        
+    branch_over_checksum_task =  BranchPythonOperator(
+            task_id='branch_over_checksum_task',
+            python_callable=branch_over_checksum_dailytrans,
+            provide_context=True,
+    )
+        
+    stop_checksum_dailytrans =  DummyOperator(task_id='stop_checksum_dailytrans')
+
+    ################ sparks job ######################
+    job_sparks = DummyOperator(task_id='job_sparks')
     ########################################################################
 
-    check_dailytrans >> branch_task_over_dailytrans >> [elt_dailytrans, stop_dailytrans]
-
-
+    check_dailytrans >> branch_task_over_dailytrans >> [schema_validation_task, stop_dailytrans]
+    schema_validation_task >> branch_over_check_schema_validation_task >> [data_quality_assert,stop_schema_validation_task]
+    data_quality_assert >> elt_dailytrans >> checksum_dailytrans
+    checksum_dailytrans >> branch_over_checksum_task >> [job_sparks, stop_checksum_dailytrans]

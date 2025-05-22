@@ -5,3 +5,4 @@ numpy
 pyspark
 python-dotenv
 boto3
+great-expectations==0.18.17
