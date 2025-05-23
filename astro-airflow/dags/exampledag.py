@@ -1,6 +1,7 @@
 from include.dailtrans_checks import DailyTansactionsChecking as DTC
 from include.data_quality import DataQualityVerifications as DQV
 from include.data_quality import DataQualityCheckSum as DQCS
+from include.preprocessing_minio import PreprocessingMinio as PM
 from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.operators.dummy import DummyOperator
@@ -20,6 +21,7 @@ dtc =  DTC(
 )
 MINIO_HOOK =  S3Hook(aws_conn_id="minio_default")
 BUCKET_NAME  = 'dailytrans'
+BUCKET_NAME_MERCHANTSINFOS = 'merchantsinfos'
 LAST_FILE_DETECT  =  max(os.listdir(PATH_DAILYTRANS_REPERTORY)) if len(os.listdir(PATH_DAILYTRANS_REPERTORY)) > 0 else ''
 dqv = DQV(PATH_DAILYTRANS_REPERTORY + '/' + LAST_FILE_DETECT)
 dqcs_dailytrans = DQCS(
@@ -107,6 +109,8 @@ with DAG(
 
 
     ############### CHECKSUM DAILYTRANS ###################
+
+    
     checksum_dailytrans = PythonOperator(
         task_id='checksum_dailytrans',
         python_callable=dqcs_dailytrans.data_checksum
@@ -117,7 +121,7 @@ with DAG(
         ti = kwargs['ti']
         checksum_dailytrans_result =  ti.xcom_pull(task_ids='checksum_dailytrans')
         if checksum_dailytrans_result['success']:
-            return 'job_sparks'
+            return 'list_merchants_of_last_dailytrans'
         else:
             return 'stop_checksum_dailytrans'
         
@@ -129,6 +133,39 @@ with DAG(
         
     stop_checksum_dailytrans =  DummyOperator(task_id='stop_checksum_dailytrans')
 
+    ############### preprocessing before sparks job ##
+    list_merchants_of_last_dailytrans = PythonOperator(
+        task_id='list_merchants_of_last_dailytrans',
+        python_callable=PM.list_merchants_of_last_dailytrans,
+        op_args=[BUCKET_NAME]
+    )
+
+    list_merchants_new_or_old_on_dailytrans =  PythonOperator(
+        task_id='list_merchants_new_or_old_on_dailytrans',
+        python_callable=PM.list_merchants_new_or_old_on_dailytrans,
+        op_args=['list_merchants_of_last_dailytrans', BUCKET_NAME_MERCHANTSINFOS],
+        provide_context=True
+    )
+
+    def branch_list_merchants_new_or_old_on_dailytrans(**kwargs):
+        ti = kwargs['ti']
+        list_merchants_new_or_old_on_dailytrans_result =  ti.xcom_pull(task_ids='list_merchants_new_or_old_on_dailytrans')
+        if len(list_merchants_new_or_old_on_dailytrans_result['new']) > 0:
+            return 'create_new_merchants_path_minio'
+        else:
+            return 'job_sparks'
+    branch_list_merchants_new_or_old_on_dailytrans_task =  BranchPythonOperator(
+            task_id='branch_list_merchants_new_or_old_on_dailytrans_task',
+            python_callable=branch_list_merchants_new_or_old_on_dailytrans,
+            provide_context=True,
+    )
+    create_new_merchants_path_minio =  PythonOperator(
+        task_id='create_new_merchants_path_minio',
+        python_callable=PM.create_new_merchants_path_minio,
+        op_args=['list_merchants_new_or_old_on_dailytrans', BUCKET_NAME_MERCHANTSINFOS],
+        provide_context=True
+    )
+
     ################ sparks job ######################
     job_sparks = DummyOperator(task_id='job_sparks')
     ########################################################################
@@ -136,4 +173,8 @@ with DAG(
     check_dailytrans >> branch_task_over_dailytrans >> [schema_validation_task, stop_dailytrans]
     schema_validation_task >> branch_over_check_schema_validation_task >> [data_quality_assert,stop_schema_validation_task]
     data_quality_assert >> elt_dailytrans >> checksum_dailytrans
-    checksum_dailytrans >> branch_over_checksum_task >> [job_sparks, stop_checksum_dailytrans]
+    checksum_dailytrans >> branch_over_checksum_task >> [list_merchants_of_last_dailytrans, stop_checksum_dailytrans]
+
+    list_merchants_of_last_dailytrans >> list_merchants_new_or_old_on_dailytrans >> branch_list_merchants_new_or_old_on_dailytrans_task
+    branch_list_merchants_new_or_old_on_dailytrans_task >> [create_new_merchants_path_minio, job_sparks]
+    create_new_merchants_path_minio >> job_sparks
